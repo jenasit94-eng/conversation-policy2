@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Operational policy: deterministic routing and execution contract."""
+
+from dataclasses import dataclass
+from enum import Enum
+import argparse
+import re
+import sys
+
+
+class Route(str, Enum):
+    SAFETY = "safety_check"
+    ANSWER = "answer_directly"
+    CLARIFY = "clarify_goal"
+    PLAY = "playful_reply"
+    CHALLENGE = "substantive_challenge"
+    EXECUTE = "execute_request"
+
+
+_DANGER_PATTERNS = (
+    r"\b(hurt myself|walking into traffic|kill myself|suicide)\b",
+    r"\b(threaten (my|a) coworker|post their private address|doxx)\b",
+)
+_FEEDBACK_FAILURE_PATTERNS = (
+    r"\byou('re| are) explaining what you('ll| will) do instead of doing it\b",
+    r"\bstop explaining\b",
+    r"\bdon't lecture\b",
+)
+_EXPLICIT_TASK_PATTERNS = (
+    r"\b(edit|show me|write|generate|run|fix|convert|code|calculate)\b",
+)
+_GOAL_SPEC_PATTERNS = (
+    r"\b(a program|something|it)\b$",
+    r"\bshow me a program\b",
+)
+_CONSEQUENTIAL_CLAIM_PATTERNS = (
+    r"\b(basically|all|most conversations are|nobody ever)\b",
+)
+
+
+@dataclass(frozen=True)
+class Signals:
+    credible_immediate_danger: bool
+    feedback_identifies_failure: bool
+    explicit_task: bool
+    needs_goal_specification: bool
+    direct_question: bool
+    accuracy_critical: bool
+    consequential_claim: bool
+
+
+def extract_signals(user_text: str, accuracy_critical: bool = False) -> Signals:
+    text = user_text.strip().lower()
+    task = any(bool(re.search(p, text)) for p in _EXPLICIT_TASK_PATTERNS)
+    return Signals(
+        credible_immediate_danger=any(
+            bool(re.search(p, text)) for p in _DANGER_PATTERNS
+        ),
+        feedback_identifies_failure=any(
+            bool(re.search(p, text)) for p in _FEEDBACK_FAILURE_PATTERNS
+        ),
+        explicit_task=task,
+        needs_goal_specification=task
+        and any(bool(re.search(p, text)) for p in _GOAL_SPEC_PATTERNS),
+        direct_question=text.endswith("?")
+        or text.startswith(("what", "why", "how", "can ", "is ", "are ")),
+        accuracy_critical=accuracy_critical,
+        consequential_claim=any(
+            bool(re.search(p, text)) for p in _CONSEQUENTIAL_CLAIM_PATTERNS
+        ),
+    )
+
+
+def choose_route(s: Signals) -> Route:
+    if s.credible_immediate_danger:
+        return Route.SAFETY
+    if s.feedback_identifies_failure and s.explicit_task:
+        return Route.EXECUTE
+    if s.needs_goal_specification:
+        return Route.CLARIFY
+    if s.explicit_task:
+        return Route.EXECUTE
+    if s.direct_question or s.accuracy_critical:
+        return Route.ANSWER
+    if s.consequential_claim:
+        return Route.CHALLENGE
+    return Route.PLAY
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("text", nargs="*", help="Message to route. Reads stdin if omitted.")
+    parser.add_argument("--accuracy-critical", action="store_true")
+    args = parser.parse_args(argv)
+    message = " ".join(args.text) if args.text else sys.stdin.read()
+    print(choose_route(extract_signals(message, args.accuracy_critical)).value)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
